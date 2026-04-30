@@ -1,6 +1,6 @@
 from flask import Flask, request, render_template_string, redirect, url_for
 import os
-import psycopg2
+import pg8000.native
 from datetime import datetime
 
 app = Flask(__name__)
@@ -202,36 +202,45 @@ STATUS_LABELS = {
 }
 
 def get_db():
-    return psycopg2.connect(os.environ["DATABASE_URL"], sslmode="require")
+    url = os.environ["DATABASE_URL"]
+    # parse postgresql://user:pass@host:port/dbname
+    url = url.replace("postgresql://", "").replace("postgres://", "")
+    user_pass, rest = url.split("@")
+    user, password = user_pass.split(":")
+    host_port, dbname = rest.split("/")
+    if ":" in host_port:
+        host, port = host_port.split(":")
+        port = int(port)
+    else:
+        host, port = host_port, 5432
+    return pg8000.native.Connection(user=user, password=password, host=host, port=port, database=dbname, ssl_context=True)
 
 def init_db():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS responses (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    label TEXT NOT NULL,
-                    timestamp TIMESTAMP DEFAULT NOW()
-                )
-            """)
-        conn.commit()
+    conn = get_db()
+    conn.run("""
+        CREATE TABLE IF NOT EXISTS responses (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            label TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    conn.close()
 
 def save_response(name: str, status: str):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO responses (name, status, label) VALUES (%s, %s, %s)",
-                (name, status, STATUS_LABELS.get(status, status))
-            )
-        conn.commit()
+    conn = get_db()
+    conn.run(
+        "INSERT INTO responses (name, status, label) VALUES (:name, :status, :label)",
+        name=name, status=status, label=STATUS_LABELS.get(status, status)
+    )
+    conn.close()
 
 def already_responded(name: str) -> bool:
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM responses WHERE name = %s LIMIT 1", (name,))
-            return cur.fetchone() is not None
+    conn = get_db()
+    rows = conn.run("SELECT 1 FROM responses WHERE name = :name LIMIT 1", name=name)
+    conn.close()
+    return len(rows) > 0
 
 BASE_STYLE = """
 <meta charset="UTF-8">
@@ -302,7 +311,7 @@ BASE_STYLE = """
 </style>
 """
 
-ENTER_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок — согласование фото</title></head><body>
+ENTER_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
 <div class="card">
   <div class="logo">Медблок</div>
   <h1>Согласование фотографии</h1>
@@ -316,7 +325,7 @@ ENTER_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медб
   </form>
 </div></body></html>"""
 
-PHOTO_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок — ваше фото</title></head><body>
+PHOTO_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
 <div class="card">
   <div class="logo">Медблок</div>
   <h1>Ваше фото</h1>
@@ -335,7 +344,7 @@ PHOTO_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медб
   </form>
 </div></body></html>"""
 
-DONE_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок — ответ принят</title></head><body>
+DONE_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
 <div class="card" style="text-align:center;">
   <div class="logo">Медблок</div>
   <div style="font-size:48px;margin-bottom:20px;">{{ icon }}</div>
