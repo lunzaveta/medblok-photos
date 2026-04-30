@@ -202,7 +202,7 @@ STATUS_LABELS = {
 }
 
 def get_db():
-    url = os.environ["DATABASE_URL"]
+    url = os.environ["DATABASE_PUBLIC_URL"]
     # parse postgresql://user:pass@host:port/dbname
     url = url.replace("postgresql://", "").replace("postgres://", "")
     user_pass, rest = url.split("@")
