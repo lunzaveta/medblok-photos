@@ -1,6 +1,6 @@
 from flask import Flask, request, render_template_string, redirect, url_for
-import csv
 import os
+import psycopg2
 from datetime import datetime
 
 app = Flask(__name__)
@@ -195,32 +195,43 @@ DOCTORS = {
     "Бочкарёва НВ": "https://tmd-static-public.obs.ru-moscow-1.hc.sbercloud.ru/avatars/vt28Kz8ikgzkV9xfNGPVoGsxVsG06e.png",
 }
 
-RESPONSES_FILE = "responses.csv"
-
 STATUS_LABELS = {
     "approve": "✅ Нравится",
     "edit":    "✏️ Нужны правки",
     "decline": "❌ Отказываюсь от размещения",
 }
 
+def get_db():
+    return psycopg2.connect(os.environ["DATABASE_URL"], sslmode="require")
+
+def init_db():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS responses (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+
 def save_response(name: str, status: str):
-    file_exists = os.path.exists(RESPONSES_FILE)
-    with open(RESPONSES_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["name", "status", "label", "timestamp"])
-        writer.writerow([
-            name,
-            status,
-            STATUS_LABELS.get(status, status),
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        ])
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO responses (name, status, label) VALUES (%s, %s, %s)",
+                (name, status, STATUS_LABELS.get(status, status))
+            )
+        conn.commit()
 
 def already_responded(name: str) -> bool:
-    if not os.path.exists(RESPONSES_FILE):
-        return False
-    with open(RESPONSES_FILE, newline="", encoding="utf-8") as f:
-        return any(row[0] == name for row in csv.reader(f) if row)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM responses WHERE name = %s LIMIT 1", (name,))
+            return cur.fetchone() is not None
 
 BASE_STYLE = """
 <meta charset="UTF-8">
@@ -374,5 +385,6 @@ def respond():
     return render_template_string(DONE_HTML, icon=icon, title=title, message=message)
 
 if __name__ == "__main__":
+    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)
