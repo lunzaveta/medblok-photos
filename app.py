@@ -1,7 +1,8 @@
 from flask import Flask, request, render_template_string, redirect, url_for
 import os
-import psycopg2
+import pg8000.native
 from datetime import datetime
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 
@@ -202,135 +203,111 @@ STATUS_LABELS = {
 }
 
 def get_db():
-    return psycopg2.connect(os.environ["DATABASE_URL"])
+    u = urlparse(os.environ["DATABASE_URL"])
+    return pg8000.native.Connection(
+        user=u.username, password=u.password,
+        host=u.hostname, port=u.port or 5432,
+        database=u.path.lstrip("/"), ssl_context=True
+    )
 
 def init_db():
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS responses (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            label TEXT NOT NULL,
-            timestamp TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    conn.commit()
-    cur.close()
+    conn.run("""CREATE TABLE IF NOT EXISTS responses (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        label TEXT NOT NULL,
+        timestamp TIMESTAMP DEFAULT NOW()
+    )""")
     conn.close()
 
 def save_response(name, status):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO responses (name, status, label) VALUES (%s, %s, %s)",
-                (name, status, STATUS_LABELS.get(status, status)))
-    conn.commit()
-    cur.close()
+    conn.run("INSERT INTO responses (name, status, label) VALUES (:n, :s, :l)",
+             n=name, s=status, l=STATUS_LABELS.get(status, status))
     conn.close()
 
 def already_responded(name):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM responses WHERE name = %s LIMIT 1", (name,))
-    result = cur.fetchone()
-    cur.close()
+    rows = conn.run("SELECT 1 FROM responses WHERE name = :n LIMIT 1", n=name)
     conn.close()
-    return result is not None
+    return len(rows) > 0
 
 BASE_STYLE = """
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e8eaf0; --muted: #6b7280; --accent: #4f8ef7; }
-  body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 40px; width: 100%; max-width: 480px; animation: fadeUp .4s ease both; }
-  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
-  .logo { font-family: 'Unbounded', sans-serif; font-size: 13px; font-weight: 600; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; margin-bottom: 32px; }
-  h1 { font-family: 'Unbounded', sans-serif; font-size: 20px; font-weight: 600; line-height: 1.3; margin-bottom: 8px; }
-  p.sub { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
-  label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
-  input[type="text"] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'Inter', sans-serif; font-size: 16px; padding: 14px 16px; outline: none; transition: border-color .2s; }
-  input[type="text"]:focus { border-color: var(--accent); }
-  .btn-primary { display: block; width: 100%; margin-top: 16px; padding: 14px; background: var(--accent); color: #fff; font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 500; border: none; border-radius: 10px; cursor: pointer; transition: opacity .2s; }
-  .btn-primary:hover { opacity: .88; }
-  .photo-wrap { border-radius: 12px; overflow: hidden; margin-bottom: 28px; border: 1px solid var(--border); background: var(--bg); aspect-ratio: 3/4; display: flex; align-items: center; justify-content: center; }
-  .photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .actions { display: flex; flex-direction: column; gap: 10px; }
-  .btn-action { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; cursor: pointer; transition: border-color .2s, background .2s; text-align: left; }
-  .btn-action:hover { border-color: var(--accent); background: rgba(79,142,247,.07); }
-  .btn-action .icon { font-size: 18px; flex-shrink: 0; }
-  .error { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); border-radius: 10px; padding: 12px 16px; font-size: 14px; color: #fca5a5; margin-top: 14px; }
-  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
-  .doctor-name { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
-  .doctor-name span { color: var(--accent); font-weight: 500; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; }
-</style>
-"""
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e8eaf0; --muted: #6b7280; --accent: #4f8ef7; }
+body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 40px; width: 100%; max-width: 480px; animation: fadeUp .4s ease both; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+.logo { font-family: 'Unbounded', sans-serif; font-size: 13px; font-weight: 600; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; margin-bottom: 32px; }
+h1 { font-family: 'Unbounded', sans-serif; font-size: 20px; font-weight: 600; line-height: 1.3; margin-bottom: 8px; }
+p.sub { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
+label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+input[type="text"] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'Inter', sans-serif; font-size: 16px; padding: 14px 16px; outline: none; transition: border-color .2s; }
+input[type="text"]:focus { border-color: var(--accent); }
+.btn-primary { display: block; width: 100%; margin-top: 16px; padding: 14px; background: var(--accent); color: #fff; font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 500; border: none; border-radius: 10px; cursor: pointer; transition: opacity .2s; }
+.btn-primary:hover { opacity: .88; }
+.photo-wrap { border-radius: 12px; overflow: hidden; margin-bottom: 28px; border: 1px solid var(--border); background: var(--bg); aspect-ratio: 3/4; display: flex; align-items: center; justify-content: center; }
+.photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.actions { display: flex; flex-direction: column; gap: 10px; }
+.btn-action { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; cursor: pointer; transition: border-color .2s, background .2s; text-align: left; }
+.btn-action:hover { border-color: var(--accent); background: rgba(79,142,247,.07); }
+.btn-action .icon { font-size: 18px; flex-shrink: 0; }
+.error { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); border-radius: 10px; padding: 12px 16px; font-size: 14px; color: #fca5a5; margin-top: 14px; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.doctor-name { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
+.doctor-name span { color: var(--accent); font-weight: 500; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 20px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; }
+</style>"""
 
 ENTER_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
-<div class="card">
-  <div class="logo">Медблок</div>
-  <h1>Согласование фотографии</h1>
-  <p class="sub">Введите вашу фамилию и инициалы, чтобы увидеть фото для размещения.</p>
-  <form method="POST" action="/photo">
-    <label for="name">Фамилия и инициалы</label>
-    <input type="text" id="name" name="name" placeholder="Например: Иванова НД" autocomplete="off" autofocus>
-    <div class="hint">Формат: Фамилия ИО (без точек)</div>
-    {% if error %}<div class="error">{{ error }}</div>{% endif %}
-    <button type="submit" class="btn-primary">Продолжить →</button>
-  </form>
-</div></body></html>"""
+<div class="card"><div class="logo">Медблок</div><h1>Согласование фотографии</h1>
+<p class="sub">Введите вашу фамилию и инициалы, чтобы увидеть фото для размещения.</p>
+<form method="POST" action="/photo">
+<label for="name">Фамилия и инициалы</label>
+<input type="text" id="name" name="name" placeholder="Например: Иванова НД" autocomplete="off" autofocus>
+<div class="hint">Формат: Фамилия ИО (без точек)</div>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<button type="submit" class="btn-primary">Продолжить →</button>
+</form></div></body></html>"""
 
 PHOTO_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
-<div class="card">
-  <div class="logo">Медблок</div>
-  <h1>Ваше фото</h1>
-  <p class="sub">Рассмотрите фотографию и выберите решение.</p>
-  <div class="doctor-name"><span>{{ name }}</span></div>
-  <div class="photo-wrap"><img src="{{ image_url }}" alt="Ваше фото" onerror="this.style.display='none'"></div>
-  <form method="POST" action="/respond">
-    <input type="hidden" name="name" value="{{ name }}">
-    <div class="actions">
-      <button type="submit" name="status" value="approve" class="btn-action"><span class="icon">✅</span> Да, нравится — можно размещать</button>
-      <button type="submit" name="status" value="edit" class="btn-action"><span class="icon">✏️</span> Нужны правки</button>
-      <button type="submit" name="status" value="decline" class="btn-action"><span class="icon">❌</span> Отказываюсь от размещения</button>
-    </div>
-  </form>
-</div></body></html>"""
+<div class="card"><div class="logo">Медблок</div><h1>Ваше фото</h1>
+<p class="sub">Рассмотрите фотографию и выберите решение.</p>
+<div class="doctor-name"><span>{{ name }}</span></div>
+<div class="photo-wrap"><img src="{{ image_url }}" alt="Ваше фото" onerror="this.style.display='none'"></div>
+<form method="POST" action="/respond"><input type="hidden" name="name" value="{{ name }}">
+<div class="actions">
+<button type="submit" name="status" value="approve" class="btn-action"><span class="icon">✅</span> Да, нравится — можно размещать</button>
+<button type="submit" name="status" value="edit" class="btn-action"><span class="icon">✏️</span> Нужны правки</button>
+<button type="submit" name="status" value="decline" class="btn-action"><span class="icon">❌</span> Отказываюсь от размещения</button>
+</div></form></div></body></html>"""
 
 DONE_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
-<div class="card" style="text-align:center;">
-  <div class="logo">Медблок</div>
-  <div style="font-size:48px;margin-bottom:20px;">{{ icon }}</div>
-  <h1>{{ title }}</h1>
-  <p class="sub" style="margin-top:10px;">{{ message }}</p>
+<div class="card" style="text-align:center;"><div class="logo">Медблок</div>
+<div style="font-size:48px;margin-bottom:20px;">{{ icon }}</div>
+<h1>{{ title }}</h1><p class="sub" style="margin-top:10px;">{{ message }}</p>
 </div></body></html>"""
 
 ALREADY_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
-<div class="card" style="text-align:center;">
-  <div class="logo">Медблок</div>
-  <div style="font-size:48px;margin-bottom:20px;">🔒</div>
-  <h1>Ответ уже принят</h1>
-  <p class="sub" style="margin-top:10px;">Вы уже отправили решение. Если нужно изменить — свяжитесь с администратором.</p>
+<div class="card" style="text-align:center;"><div class="logo">Медблок</div>
+<div style="font-size:48px;margin-bottom:20px;">🔒</div>
+<h1>Ответ уже принят</h1>
+<p class="sub" style="margin-top:10px;">Вы уже отправили решение. Если нужно изменить — свяжитесь с администратором.</p>
 </div></body></html>"""
 
 ADMIN_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок — Админ</title></head><body>
-<div class="card" style="max-width:800px;">
-  <div class="logo">Медблок — Ответы</div>
-  <h1>Результаты согласования</h1>
-  <p class="sub" style="margin-bottom:20px;">Всего ответов: {{ total }}</p>
-  <table>
-    <tr><th>ФИО</th><th>Статус</th><th>Дата</th></tr>
-    {% for row in rows %}
-    <tr><td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td></tr>
-    {% endfor %}
-  </table>
-</div></body></html>"""
+<div class="card" style="max-width:800px;"><div class="logo">Медблок — Ответы</div>
+<h1>Результаты согласования</h1>
+<p class="sub">Всего ответов: {{ total }}</p>
+<table><tr><th>ФИО</th><th>Статус</th><th>Дата</th></tr>
+{% for row in rows %}<tr><td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td></tr>{% endfor %}
+</table></div></body></html>"""
 
 @app.route("/", methods=["GET"])
 def index():
@@ -367,10 +344,7 @@ def respond():
 @app.route("/admin")
 def admin():
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT name, label, to_char(timestamp, 'DD.MM.YYYY HH24:MI') FROM responses ORDER BY timestamp DESC")
-    rows = cur.fetchall()
-    cur.close()
+    rows = conn.run("SELECT name, label, to_char(timestamp, 'DD.MM.YYYY HH24:MI') FROM responses ORDER BY timestamp DESC")
     conn.close()
     return render_template_string(ADMIN_HTML, rows=rows, total=len(rows))
 
