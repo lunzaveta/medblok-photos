@@ -1,6 +1,6 @@
 from flask import Flask, request, render_template_string, redirect, url_for
+import csv
 import os
-import pg8000.native
 from datetime import datetime
 
 app = Flask(__name__)
@@ -195,52 +195,27 @@ DOCTORS = {
     "Бочкарёва НВ": "https://tmd-static-public.obs.ru-moscow-1.hc.sbercloud.ru/avatars/vt28Kz8ikgzkV9xfNGPVoGsxVsG06e.png",
 }
 
+RESPONSES_FILE = "/tmp/responses.csv"
+
 STATUS_LABELS = {
     "approve": "✅ Нравится",
     "edit":    "✏️ Нужны правки",
     "decline": "❌ Отказываюсь от размещения",
 }
 
-def get_db():
-    url = os.environ["DATABASE_PUBLIC_URL"]
-    # parse postgresql://user:pass@host:port/dbname
-    url = url.replace("postgresql://", "").replace("postgres://", "")
-    user_pass, rest = url.split("@")
-    user, password = user_pass.split(":")
-    host_port, dbname = rest.split("/")
-    if ":" in host_port:
-        host, port = host_port.split(":")
-        port = int(port)
-    else:
-        host, port = host_port, 5432
-    return pg8000.native.Connection(user=user, password=password, host=host, port=port, database=dbname, ssl_context=True)
+def save_response(name, status):
+    file_exists = os.path.exists(RESPONSES_FILE)
+    with open(RESPONSES_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["name", "status", "label", "timestamp"])
+        writer.writerow([name, status, STATUS_LABELS.get(status, status), datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
 
-def init_db():
-    conn = get_db()
-    conn.run("""
-        CREATE TABLE IF NOT EXISTS responses (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            label TEXT NOT NULL,
-            timestamp TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    conn.close()
-
-def save_response(name: str, status: str):
-    conn = get_db()
-    conn.run(
-        "INSERT INTO responses (name, status, label) VALUES (:name, :status, :label)",
-        name=name, status=status, label=STATUS_LABELS.get(status, status)
-    )
-    conn.close()
-
-def already_responded(name: str) -> bool:
-    conn = get_db()
-    rows = conn.run("SELECT 1 FROM responses WHERE name = :name LIMIT 1", name=name)
-    conn.close()
-    return len(rows) > 0
+def already_responded(name):
+    if not os.path.exists(RESPONSES_FILE):
+        return False
+    with open(RESPONSES_FILE, newline="", encoding="utf-8") as f:
+        return any(row[0] == name for row in csv.reader(f) if row)
 
 BASE_STYLE = """
 <meta charset="UTF-8">
@@ -248,63 +223,25 @@ BASE_STYLE = """
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
-    --text: #e8eaf0; --muted: #6b7280; --accent: #4f8ef7;
-  }
-  body {
-    background: var(--bg); color: var(--text);
-    font-family: 'Inter', sans-serif; min-height: 100vh;
-    display: flex; align-items: center; justify-content: center; padding: 24px;
-  }
-  .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 16px; padding: 40px; width: 100%; max-width: 480px;
-    animation: fadeUp .4s ease both;
-  }
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(16px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  .logo {
-    font-family: 'Unbounded', sans-serif; font-size: 13px; font-weight: 600;
-    letter-spacing: .08em; color: var(--accent); text-transform: uppercase; margin-bottom: 32px;
-  }
+  :root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e8eaf0; --muted: #6b7280; --accent: #4f8ef7; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 40px; width: 100%; max-width: 480px; animation: fadeUp .4s ease both; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+  .logo { font-family: 'Unbounded', sans-serif; font-size: 13px; font-weight: 600; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; margin-bottom: 32px; }
   h1 { font-family: 'Unbounded', sans-serif; font-size: 20px; font-weight: 600; line-height: 1.3; margin-bottom: 8px; }
   p.sub { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
   label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
-  input[type="text"] {
-    width: 100%; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 10px; color: var(--text); font-family: 'Inter', sans-serif;
-    font-size: 16px; padding: 14px 16px; outline: none; transition: border-color .2s;
-  }
+  input[type="text"] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'Inter', sans-serif; font-size: 16px; padding: 14px 16px; outline: none; transition: border-color .2s; }
   input[type="text"]:focus { border-color: var(--accent); }
-  .btn-primary {
-    display: block; width: 100%; margin-top: 16px; padding: 14px;
-    background: var(--accent); color: #fff; font-family: 'Inter', sans-serif;
-    font-size: 15px; font-weight: 500; border: none; border-radius: 10px;
-    cursor: pointer; transition: opacity .2s;
-  }
+  .btn-primary { display: block; width: 100%; margin-top: 16px; padding: 14px; background: var(--accent); color: #fff; font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 500; border: none; border-radius: 10px; cursor: pointer; transition: opacity .2s; }
   .btn-primary:hover { opacity: .88; }
-  .photo-wrap {
-    border-radius: 12px; overflow: hidden; margin-bottom: 28px;
-    border: 1px solid var(--border); background: var(--bg);
-    aspect-ratio: 3/4; display: flex; align-items: center; justify-content: center;
-  }
+  .photo-wrap { border-radius: 12px; overflow: hidden; margin-bottom: 28px; border: 1px solid var(--border); background: var(--bg); aspect-ratio: 3/4; display: flex; align-items: center; justify-content: center; }
   .photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .actions { display: flex; flex-direction: column; gap: 10px; }
-  .btn-action {
-    display: flex; align-items: center; gap: 12px; padding: 14px 18px;
-    border-radius: 10px; border: 1px solid var(--border); background: var(--bg);
-    color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px;
-    cursor: pointer; transition: border-color .2s, background .2s; text-align: left;
-  }
+  .btn-action { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; cursor: pointer; transition: border-color .2s, background .2s; text-align: left; }
   .btn-action:hover { border-color: var(--accent); background: rgba(79,142,247,.07); }
   .btn-action .icon { font-size: 18px; flex-shrink: 0; }
-  .error {
-    background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
-    border-radius: 10px; padding: 12px 16px; font-size: 14px; color: #fca5a5; margin-top: 14px;
-  }
+  .error { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); border-radius: 10px; padding: 12px 16px; font-size: 14px; color: #fca5a5; margin-top: 14px; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .doctor-name { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
   .doctor-name span { color: var(--accent); font-weight: 500; }
@@ -331,9 +268,7 @@ PHOTO_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медб
   <h1>Ваше фото</h1>
   <p class="sub">Рассмотрите фотографию и выберите решение.</p>
   <div class="doctor-name"><span>{{ name }}</span></div>
-  <div class="photo-wrap">
-    <img src="{{ image_url }}" alt="Ваше фото" onerror="this.style.display='none'">
-  </div>
+  <div class="photo-wrap"><img src="{{ image_url }}" alt="Ваше фото" onerror="this.style.display='none'"></div>
   <form method="POST" action="/respond">
     <input type="hidden" name="name" value="{{ name }}">
     <div class="actions">
@@ -373,8 +308,7 @@ def photo():
         return render_template_string(ENTER_HTML, error="Не найдено. Проверьте формат: Иванова НД (без точек).")
     if already_responded(name):
         return render_template_string(ALREADY_HTML)
-    image_url = DOCTORS[name]
-    return render_template_string(PHOTO_HTML, name=name, image_url=image_url)
+    return render_template_string(PHOTO_HTML, name=name, image_url=DOCTORS[name])
 
 @app.route("/respond", methods=["POST"])
 def respond():
@@ -394,6 +328,5 @@ def respond():
     return render_template_string(DONE_HTML, icon=icon, title=title, message=message)
 
 if __name__ == "__main__":
-    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)
