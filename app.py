@@ -1,6 +1,6 @@
 from flask import Flask, request, render_template_string, redirect, url_for
-import csv
 import os
+import psycopg2
 from datetime import datetime
 
 app = Flask(__name__)
@@ -195,27 +195,48 @@ DOCTORS = {
     "Бочкарёва НВ": "https://tmd-static-public.obs.ru-moscow-1.hc.sbercloud.ru/avatars/vt28Kz8ikgzkV9xfNGPVoGsxVsG06e.png",
 }
 
-RESPONSES_FILE = "/tmp/responses.csv"
-
 STATUS_LABELS = {
     "approve": "✅ Нравится",
     "edit":    "✏️ Нужны правки",
     "decline": "❌ Отказываюсь от размещения",
 }
 
+def get_db():
+    return psycopg2.connect(os.environ["DATABASE_URL"])
+
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS responses (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            label TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
 def save_response(name, status):
-    file_exists = os.path.exists(RESPONSES_FILE)
-    with open(RESPONSES_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["name", "status", "label", "timestamp"])
-        writer.writerow([name, status, STATUS_LABELS.get(status, status), datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO responses (name, status, label) VALUES (%s, %s, %s)",
+                (name, status, STATUS_LABELS.get(status, status)))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def already_responded(name):
-    if not os.path.exists(RESPONSES_FILE):
-        return False
-    with open(RESPONSES_FILE, newline="", encoding="utf-8") as f:
-        return any(row[0] == name for row in csv.reader(f) if row)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM responses WHERE name = %s LIMIT 1", (name,))
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    return result is not None
 
 BASE_STYLE = """
 <meta charset="UTF-8">
@@ -245,6 +266,9 @@ BASE_STYLE = """
   .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .doctor-name { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
   .doctor-name span { color: var(--accent); font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
 </style>
 """
 
@@ -295,6 +319,19 @@ ALREADY_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Мед
   <p class="sub" style="margin-top:10px;">Вы уже отправили решение. Если нужно изменить — свяжитесь с администратором.</p>
 </div></body></html>"""
 
+ADMIN_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок — Админ</title></head><body>
+<div class="card" style="max-width:800px;">
+  <div class="logo">Медблок — Ответы</div>
+  <h1>Результаты согласования</h1>
+  <p class="sub" style="margin-bottom:20px;">Всего ответов: {{ total }}</p>
+  <table>
+    <tr><th>ФИО</th><th>Статус</th><th>Дата</th></tr>
+    {% for row in rows %}
+    <tr><td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td></tr>
+    {% endfor %}
+  </table>
+</div></body></html>"""
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template_string(ENTER_HTML, error=None)
@@ -327,6 +364,17 @@ def respond():
     icon, title, message = messages[status]
     return render_template_string(DONE_HTML, icon=icon, title=title, message=message)
 
+@app.route("/admin")
+def admin():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT name, label, to_char(timestamp, 'DD.MM.YYYY HH24:MI') FROM responses ORDER BY timestamp DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return render_template_string(ADMIN_HTML, rows=rows, total=len(rows))
+
 if __name__ == "__main__":
+    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)
