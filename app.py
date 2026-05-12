@@ -274,14 +274,20 @@ def init_db():
         name TEXT NOT NULL,
         status TEXT NOT NULL,
         label TEXT NOT NULL,
+        comment TEXT DEFAULT '',
         timestamp TIMESTAMP DEFAULT NOW()
     )""")
+    # Add comment column if not exists (for existing tables)
+    try:
+        conn.run("ALTER TABLE responses ADD COLUMN IF NOT EXISTS comment TEXT DEFAULT ''")
+    except:
+        pass
     conn.close()
 
-def save_response(name, status):
+def save_response(name, status, comment=""):
     conn = get_db()
-    conn.run("INSERT INTO responses (name, status, label) VALUES (:n, :s, :l)",
-             n=name, s=status, l=STATUS_LABELS.get(status, status))
+    conn.run("INSERT INTO responses (name, status, label, comment) VALUES (:n, :s, :l, :c)",
+             n=name, s=status, l=STATUS_LABELS.get(status, status), c=comment)
     conn.close()
 
 def already_responded(name):
@@ -305,18 +311,23 @@ p.sub { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 2
 label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
 input[type="text"] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'Inter', sans-serif; font-size: 16px; padding: 14px 16px; outline: none; transition: border-color .2s; }
 input[type="text"]:focus { border-color: var(--accent); }
+textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; padding: 12px 16px; outline: none; transition: border-color .2s; resize: vertical; min-height: 80px; margin-top: 16px; }
+textarea:focus { border-color: var(--accent); }
+textarea::placeholder { color: var(--muted); }
 .btn-primary { display: block; width: 100%; margin-top: 16px; padding: 14px; background: var(--accent); color: #fff; font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 500; border: none; border-radius: 10px; cursor: pointer; transition: opacity .2s; }
 .btn-primary:hover { opacity: .88; }
 .photo-wrap { border-radius: 12px; overflow: hidden; margin-bottom: 28px; border: 1px solid var(--border); background: var(--bg); aspect-ratio: 3/4; display: flex; align-items: center; justify-content: center; }
 .photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .actions { display: flex; flex-direction: column; gap: 10px; }
-.btn-action { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; cursor: pointer; transition: border-color .2s, background .2s; text-align: left; }
+.btn-action { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; cursor: pointer; transition: border-color .2s, background .2s; text-align: left; width: 100%; }
 .btn-action:hover { border-color: var(--accent); background: rgba(79,142,247,.07); }
+.btn-action.selected { border-color: var(--accent); background: rgba(79,142,247,.12); }
 .btn-action .icon { font-size: 18px; flex-shrink: 0; }
 .error { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); border-radius: 10px; padding: 12px 16px; font-size: 14px; color: #fca5a5; margin-top: 14px; }
 .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
 .doctor-name { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
 .doctor-name span { color: var(--accent); font-weight: 500; }
+.comment-block { display: none; margin-top: 16px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 20px; }
 th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-weight: 500; }
@@ -338,12 +349,30 @@ PHOTO_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медб
 <p class="sub">Рассмотрите фотографию и выберите решение.</p>
 <div class="doctor-name"><span>{{ name }}</span></div>
 <div class="photo-wrap"><img src="{{ image_url }}" alt="Ваше фото" onerror="this.style.display='none'"></div>
-<form method="POST" action="/respond"><input type="hidden" name="name" value="{{ name }}">
+<form method="POST" action="/respond" id="form">
+<input type="hidden" name="name" value="{{ name }}">
+<input type="hidden" name="status" id="status-input" value="">
 <div class="actions">
-<button type="submit" name="status" value="approve" class="btn-action"><span class="icon">✅</span> Да, нравится — можно размещать</button>
-<button type="submit" name="status" value="edit" class="btn-action"><span class="icon">✏️</span> Нужны правки</button>
-<button type="submit" name="status" value="decline" class="btn-action"><span class="icon">❌</span> Отказываюсь от размещения</button>
-</div></form></div></body></html>"""
+  <button type="button" onclick="selectStatus('approve', this)" class="btn-action"><span class="icon">✅</span> Да, нравится — можно размещать</button>
+  <button type="button" onclick="selectStatus('edit', this)" class="btn-action"><span class="icon">✏️</span> Нужны правки</button>
+  <button type="button" onclick="selectStatus('decline', this)" class="btn-action"><span class="icon">❌</span> Отказываюсь от размещения</button>
+</div>
+<div class="comment-block" id="comment-block">
+  <textarea name="comment" placeholder="Напишите комментарий (необязательно)..."></textarea>
+</div>
+<button type="submit" class="btn-primary" id="submit-btn" style="display:none;">Отправить ответ →</button>
+</form>
+<script>
+function selectStatus(status, btn) {
+  document.querySelectorAll('.btn-action').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  document.getElementById('status-input').value = status;
+  document.getElementById('submit-btn').style.display = 'block';
+  var cb = document.getElementById('comment-block');
+  cb.style.display = (status === 'edit' || status === 'decline') ? 'block' : 'none';
+}
+</script>
+</div></body></html>"""
 
 DONE_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок</title></head><body>
 <div class="card" style="text-align:center;"><div class="logo">Медблок</div>
@@ -359,11 +388,11 @@ ALREADY_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Мед
 </div></body></html>"""
 
 ADMIN_HTML = """<!DOCTYPE html><html><head>""" + BASE_STYLE + """<title>Медблок — Админ</title></head><body>
-<div class="card" style="max-width:800px;"><div class="logo">Медблок — Ответы</div>
+<div class="card" style="max-width:900px;"><div class="logo">Медблок — Ответы</div>
 <h1>Результаты согласования</h1>
 <p class="sub">Всего ответов: {{ total }}</p>
-<table><tr><th>ФИО</th><th>Статус</th><th>Дата</th></tr>
-{% for row in rows %}<tr><td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td></tr>{% endfor %}
+<table><tr><th>ФИО</th><th>Статус</th><th>Комментарий</th><th>Дата</th></tr>
+{% for row in rows %}<tr><td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] or "—" }}</td><td>{{ row[3] }}</td></tr>{% endfor %}
 </table></div></body></html>"""
 
 @app.route("/", methods=["GET"])
@@ -385,11 +414,12 @@ def photo():
 def respond():
     name = request.form.get("name", "").strip()
     status = request.form.get("status", "").strip()
+    comment = request.form.get("comment", "").strip()
     if not name or name not in DOCTORS or status not in STATUS_LABELS:
         return redirect(url_for("index"))
     if already_responded(name):
         return render_template_string(ALREADY_HTML)
-    save_response(name, status)
+    save_response(name, status, comment)
     messages = {
         "approve": ("✅", "Спасибо!", "Ваше согласие зафиксировано. Фото будет размещено."),
         "edit":    ("✏️", "Принято!", "Мы получили запрос на правки. Скоро свяжемся с вами."),
@@ -401,7 +431,7 @@ def respond():
 @app.route("/admin")
 def admin():
     conn = get_db()
-    rows = conn.run("SELECT name, label, to_char(timestamp, 'DD.MM.YYYY HH24:MI') FROM responses ORDER BY timestamp DESC")
+    rows = conn.run("SELECT name, label, comment, to_char(timestamp, 'DD.MM.YYYY HH24:MI') FROM responses ORDER BY timestamp DESC")
     conn.close()
     return render_template_string(ADMIN_HTML, rows=rows, total=len(rows))
 
